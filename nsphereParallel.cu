@@ -6,11 +6,7 @@
 #include <iostream>
 #include <cuda.h>
 
-
-
-//const long MAXDIM = 10;
-//const double RMIN = 2.0;
-//const double RMAX = 8.0;
+#define THREADS_PER_BLOCK 1024
 
 long powlong(long n, long k)
 /* Evaluate n**k where both are long integers */
@@ -21,14 +17,17 @@ long powlong(long n, long k)
 }
 
 
-__global__ void cudaCountIn(long* dev_array, long ndim,  long halfb,  double rsquare, long base, long ntotal)
+__global__ void cudaCountIn(int* dev_counter, long ndim,  long halfb,  double rsquare, long base, long ntotal)
 {
+    __shared__  int tmp_array[THREADS_PER_BLOCK];//long* tmp_array = new long[ntotal];
+
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
 
 
 
     if( tid < ntotal)
     {
+        tmp_array[tid] = 0;
         long* index = new long[ndim];
         for (long i = 0; i < ndim; ++i) index[i] = 0;
 
@@ -52,15 +51,21 @@ __global__ void cudaCountIn(long* dev_array, long ndim,  long halfb,  double rsq
         if (rtestsq < rsquare)
         {
 
-            dev_array[tid] = 1;
+            tmp_array[tid] = 1;
         }
 
-        else
+        __syncthreads();
+        if(tid == 0)
         {
-            dev_array[tid] = 0;
-        }
 
+            int counter = 0;
+            for(int i=0; i<ntotal; i++)
+                counter += tmp_array[i];
+            atomicAdd(dev_counter, counter);
+        }
     }
+
+
 
 }
 
@@ -73,8 +78,8 @@ int main(void)
 
     for (long n = 0; n < ntrials; ++n)
     {
-        const double radius = 1.5;//drand48() * (RMAX - RMIN) + RMIN;
-        const long  ndim = 3;//lrand48() % (MAXDIM - 1) + 1;
+        const double radius = 25.5;
+        const long  ndim = 1;
         std::cout << "### " << n << " " << radius << " " << ndim << " ... " << std::endl;
 
         const long halfb = static_cast<long>(floor(radius));
@@ -82,7 +87,7 @@ int main(void)
         const double rsquare = radius * radius;
         const long ntotal = powlong(base, ndim);
 
-        size_t size = ntotal * sizeof(long);
+        size_t size =  sizeof(int);
 
 
 
@@ -96,27 +101,22 @@ int main(void)
 
 
         // Allocate in HOST memory
-        long* host_array = (long*)malloc(size);
+        int* host_counter = (int*)malloc(size);
 
 
         // Allocate in DEVICE memory
-        long *dev_array;
-        cudaMalloc(&dev_array, size);
-
-
-        //cudaMemcpy(dev_array, host_array, size, cudaMemcpyHostToDevice);
-        //cudaMemcpy(dev_index, host_index, index_size, cudaMemcpyHostToDevice);
-        cudaMemset(dev_array, 0, size);
+        int *dev_counter;
+        cudaMalloc(&dev_counter, size);
+        cudaMemset(dev_counter, 0, size);
 
         // Set up layout of kernel grid
-        int threadsPerBlock = 1024;
+        int threadsPerBlock = THREADS_PER_BLOCK;
         int blocksPerGrid = (ntotal + threadsPerBlock - 1) / threadsPerBlock;
 
-        std::cout << "###  blocksPerGrid ########"  << blocksPerGrid<<std::endl;
 
         cudaEventRecord(start, 0);
 
-        cudaCountIn<<<blocksPerGrid, threadsPerBlock>>>(dev_array, ndim, halfb, rsquare, base, ntotal);
+        cudaCountIn<<<blocksPerGrid, threadsPerBlock>>>(dev_counter, ndim, halfb, rsquare, base, ntotal);
 
 
         cudaEventRecord(stop, 0);
@@ -129,23 +129,13 @@ int main(void)
         std::cout << "Kernel took: " << time << " ms" << std::endl;
 
 
-        cudaMemcpy(host_array, dev_array, size, cudaMemcpyDeviceToHost);
-
-        long counter = 0;
+        cudaMemcpy(host_counter, dev_counter, size, cudaMemcpyDeviceToHost);
 
 
-        for (long i=0; i< ntotal ; i++)
-        {
-            std::cout<<"host_array["<<i<<"]="<<host_array[i]<<" ";
-            counter += host_array[i];
-            //std::cout<<"host_index["<<i<<"]="<<host_array[i]<<" ";
-        }
+        std::cout << " the numbers of integer coordinate points inside the sphere -> " << host_counter[0] << " " << std::endl;
+        cudaFree(dev_counter);
 
-
-        std::cout << " -> " << counter << " " << std::endl;
-        cudaFree(dev_array);
-
-        free(host_array);
+        free(host_counter);
 
 
 
